@@ -1,0 +1,291 @@
+#!/usr/bin/perl
+#
+# uwimap2cyrus - Import uw-imapd folders into a cyrus-imapd spool
+#
+# Copyright © 2006 Steven Pritchard <steve@kspei.com>
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to
+#
+#     Free Software Foundation, Inc.
+#     51 Franklin Street, Fifth Floor
+#     Boston, MA  02110-1301
+#     USA
+#
+# $Id: uwimap2cyrus,v 1.1 2006/07/27 20:26:18 steve Exp $
+
+=head1 NAME
+
+uwimap2cyrus - Import uw-imapd folders into a cyrus-imapd spool
+
+=cut
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use Pod::Usage;
+use FileHandle;
+use Mail::Util qw(read_mbox);
+use File::Path;
+
+our $verbose=0;
+our $debug=0;
+our $help=0;
+
+our $uwroot="/";
+our $uwmail="/var/mail";
+our $cyrspooldir="/var/spool/imap";
+our $cyruser="cyrus"; # FIXME - Should be the owner of $cyrspooldir.
+our $cyrgroup="mail"; # FIXME - Ditto.
+
+sub verbose(@) {
+    print STDERR @_, "\n" if ($verbose or $debug);
+}
+
+sub debug(@) {
+    print STDERR @_, "\n" if ($debug);
+}
+
+sub subject($) {
+    my $message=$_[0];
+
+    for my $line (@{$message}) {
+        return undef if ($line=~/^\s*$/);
+
+        if ($line=~/^Subject:\s*(.*)$/i) {
+            return $1;
+        }
+    }
+
+    return undef;
+}
+
+=head1 SYNOPSIS
+
+uwimap2cyrus [options]
+
+ Options:
+    --help              -h      Help message
+    --verbose           -v      Be more verbose
+    --uw-root           -r      Root directory of source (defaults to /)
+    --uw-mail           -m      Source mail spool (defaults to /var/mail)
+    --cyrus-spool       -c      Cyrus imapd spool directory
+                                (defaults to /var/spool/imap)
+    --cyrus-user        -u      Cyrus user id (defaults to "cyrus")
+    --cyrus-group       -g      Cyrus group id (defaults to "mail")
+
+=head1 DESCRIPTION
+
+B<uwimap2cyrus> will import mail from uw-imapd mailboxes into a
+cyrus-imapd mail store.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-h>, B<--help>
+
+Print a brief help message and exit.
+
+=item B<-v>, B<--verbose>
+
+Be more verbose.
+
+=item B<-r>, B<--uw-root>
+
+Specify the root directory containing a uw-imapd installation.
+
+The default is the system root directory.
+
+=item B<-m>, B<--uw-mail>
+
+Specify the uw-imapd spool directory.
+
+The default is /var/mail.
+
+=item B<-c>, B<--cyrus-spool>
+
+Specify the cyrus-imapd spool directory.
+
+The default is /var/spool/imap.
+
+=item B<-u>, B<--cyrus-user>
+
+Specify the user who should own the cyrus-imapd spool.
+
+The default is "cyrus".
+
+=item B<-g>, B<--cyrus-group>
+
+Specify the group who should own the cyrus-imapd spool.
+
+The default is "mail".
+
+=back
+
+=cut
+
+GetOptions(
+        'help|h'                => \$help,
+        'verbose|v'             => \$verbose,
+        'debug|D'               => \$debug,
+        'uw-root|r=s'           => \$uwroot,
+        'uw-mail|m=s'           => \$uwmail,
+        'cyrus-spool|c=s'       => \$cyrspooldir,
+        'cyrus-user|u=s'        => \$cyruser,
+        'cyrus-group|g=s'       => \$cyrgroup,
+    ) or pod2usage({ -exitval => 1, -verbose => 0 });
+
+pod2usage({ -exitval => 0, -verbose => 1 }) if ($help);
+
+if (!-d $uwroot) {
+    warn "Source directory $uwroot does not exist!\n";
+    pod2usage({ -exitval => 1, -verbose => 0 });
+} elsif (!-r "$uwroot/etc/passwd") {
+    warn "Source passwd file $uwroot/etc/passwd is not readable!\n";
+    pod2usage({ -exitval => 1, -verbose => 0 });
+} elsif (!-d "$uwroot$uwmail") {
+    warn "Source mail spool directory $uwroot$uwmail does not exist!\n";
+    pod2usage({ -exitval => 1, -verbose => 0 });
+} elsif (!-d $cyrspooldir) {
+    warn "Cyrus spool directory $cyrspooldir does not exist!\n";
+    pod2usage({ -exitval => 1, -verbose => 0 });
+}
+
+our $cyruid=getpwnam($cyruser);
+our $cyrgid=getgrnam($cyrgroup);
+
+# Grab a list of users from $uwroot/etc/passwd.
+my $passwd=new FileHandle "<$uwroot/etc/passwd"
+    or die "Failed to open $uwroot/etc/passwd: $!\n";
+
+my %users;
+while (<$passwd>) {
+    my @n=split /:/;
+    $users{$n[0]}=[@n[1..$#n]];
+}
+
+$passwd->close();
+
+my %copy;
+for my $user (keys %users) {
+    # FIXME - What is the folder name for users that aren't all lowercase?
+    if ($user ne lc($user)) {
+        warn "Skipping unsafe username $user...\n";
+        next;
+    }
+
+    if (-f "$uwroot/$uwmail/$user") {
+        debug("Found inbox for $user...");
+        my $folder=$user;
+        $folder=~tr/./^/;
+        my $cyrfolder="$cyrspooldir/" . substr($user, 0, 1) . "/user/$folder/";
+        # FIXME - For security, we probably should
+        # make sure the user owns this file.
+        $copy{"$uwroot/$uwmail/$user"}=$cyrfolder;
+
+        my $home=$users{$user}->[4];
+        if (-d "$uwroot/$home") {
+            debug("Found home directory ($home) for $user...");
+
+            if (-f "$uwroot/$home/.mailboxlist") {
+                debug("Checking .mailboxlist for folders...");
+
+                my $list=new FileHandle "<$uwroot/$home/.mailboxlist";
+
+                if (!defined($list)) {
+                    warn "Failed to open $uwroot/$home/.mailboxlist: $!\n";
+                    next;
+                }
+
+                while (<$list>) {
+                    chomp;
+                    # FIXME - Sanitize the folder name.
+                    # Below is a feeble attempt.
+                    if (/\/\.\.\// or /^(?:\.\.)?\//) {
+                        warn "Skipping unsafe folder $uwroot/$home/$_\n";
+                        next;
+                    }
+
+                    my $folder=$_;
+                    $folder=~tr/./^/;
+                    if (-f "$uwroot/$home/$_") {
+                        debug("Found folder $uwroot/$home/$_");
+                        # FIXME - For security, we probably should
+                        # make sure the user owns this file.
+                        $copy{"$uwroot/$home/$_"}=$cyrfolder . $folder;
+                    }
+                }
+            }
+        }
+    } else {
+        debug("Skipping user $user...");
+    }
+}
+
+for my $source (keys(%copy)) {
+    my @messages=read_mbox($source);
+
+    if (@messages
+            and subject($messages[0])
+                eq "DON'T DELETE THIS MESSAGE -- FOLDER INTERNAL DATA") {
+        shift @messages;
+    }
+
+    verbose scalar(@messages) . " messages in $source.";
+    verbose "$source => $copy{$source}";
+
+    for my $dir (mkpath($copy{$source}, $debug, 0700)) {
+        if (chown($cyruid, $cyrgid, $dir) != 1) {
+            warn "chmod() failed on $dir: $!\n";
+        }
+    }
+
+    # FIXME - Check to see if the folder exists.
+    # If it does, figure out a message offset to start at.
+    for (my $n=1;$n<=@messages;$n++) {
+        debug "Copying message $n (" . subject($messages[$n-1])
+            . ") to $copy{$source}/$n.";
+
+        my $dest=new FileHandle "$copy{$source}/$n.", O_WRONLY|O_CREAT|O_EXCL
+            or die "Failed to create $copy{$source}/$n.: $!\n";
+
+        if (chmod(0600, "$copy{$source}/$n.") != 1) {
+            warn "chmod() failed on $copy{$source}/$n.: $!\n";
+        }
+
+        if (chown($cyruid, $cyrgid, "$copy{$source}/$n.") != 1) {
+            warn "chown() failed on $copy{$source}/$n.: $!\n";
+        }
+
+        for my $line (@{$messages[$n-1]}) {
+            $line=~s/(?<!\r)\n/\r\n/g;
+            print $dest $line;
+        }
+    }
+}
+
+=head1 AUTHOR
+
+Steven Pritchard <steve@kspei.com>
+
+=head1 SEE ALSO
+
+L<http://www.google.com/search?q=mbox2cyrus>,
+L<http://dannyman.toldme.com/warez/uw2cyrus>,
+L<http://www.codepoets.co.uk/docs/courier2cyrus>
+
+=cut
+
+# vi: set ai et:

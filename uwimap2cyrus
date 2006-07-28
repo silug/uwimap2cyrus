@@ -22,7 +22,7 @@
 #     Boston, MA  02110-1301
 #     USA
 #
-# $Id: uwimap2cyrus,v 1.1 2006/07/27 20:26:18 steve Exp $
+# $Id: uwimap2cyrus,v 1.2 2006/07/28 00:23:49 steve Exp $
 
 =head1 NAME
 
@@ -48,6 +48,7 @@ our $uwmail="/var/mail";
 our $cyrspooldir="/var/spool/imap";
 our $cyruser="cyrus"; # FIXME - Should be the owner of $cyrspooldir.
 our $cyrgroup="mail"; # FIXME - Ditto.
+our $cyrreconstruct="/usr/lib/cyrus-imapd/reconstruct";
 
 sub verbose(@) {
     print STDERR @_, "\n" if ($verbose or $debug);
@@ -71,6 +72,22 @@ sub subject($) {
     return undef;
 }
 
+sub touch($$$@) {
+    my ($uid,$gid,$mode,@files)=@_;
+
+    for my $file (@files) {
+        my $fh=new FileHandle $file, O_CREAT|O_WRONLY
+            or warn "Failed to create $file: $!\n";
+        $fh->close();
+        if (chown($uid, $gid, $file) != 1) {
+            warn "chown() failed on $file: $!\n";
+        }
+        if (chmod($mode, $file) != 1) {
+            warn "chmod() failed on $file: $!\n";
+        }
+    }
+}
+
 =head1 SYNOPSIS
 
 uwimap2cyrus [options]
@@ -84,6 +101,7 @@ uwimap2cyrus [options]
                                 (defaults to /var/spool/imap)
     --cyrus-user        -u      Cyrus user id (defaults to "cyrus")
     --cyrus-group       -g      Cyrus group id (defaults to "mail")
+    --cyrus-reconstruct -z      Path to reconstruct
 
 =head1 DESCRIPTION
 
@@ -132,6 +150,10 @@ Specify the group who should own the cyrus-imapd spool.
 
 The default is "mail".
 
+=item B<-z>, B<--cyrus-reconstruct>
+
+Specify the path to the reconstruct program.
+
 =back
 
 =cut
@@ -145,6 +167,7 @@ GetOptions(
         'cyrus-spool|c=s'       => \$cyrspooldir,
         'cyrus-user|u=s'        => \$cyruser,
         'cyrus-group|g=s'       => \$cyrgroup,
+        'cyrus-reconstruct|z=s' => \$cyrreconstruct,
     ) or pod2usage({ -exitval => 1, -verbose => 0 });
 
 pod2usage({ -exitval => 0, -verbose => 1 }) if ($help);
@@ -161,6 +184,9 @@ if (!-d $uwroot) {
 } elsif (!-d $cyrspooldir) {
     warn "Cyrus spool directory $cyrspooldir does not exist!\n";
     pod2usage({ -exitval => 1, -verbose => 0 });
+} elsif (!-x $cyrreconstruct) {
+    warn "Cyrus reconstruct program $cyrreconstruct not found!\n";
+    $cyrreconstruct=undef;
 }
 
 our $cyruid=getpwnam($cyruser);
@@ -179,6 +205,7 @@ while (<$passwd>) {
 $passwd->close();
 
 my %copy;
+my @rebuild;
 for my $user (keys %users) {
     # FIXME - What is the folder name for users that aren't all lowercase?
     if ($user ne lc($user)) {
@@ -188,6 +215,7 @@ for my $user (keys %users) {
 
     if (-f "$uwroot/$uwmail/$user") {
         debug("Found inbox for $user...");
+        push @rebuild, $user;
         my $folder=$user;
         $folder=~tr/./^/;
         my $cyrfolder="$cyrspooldir/" . substr($user, 0, 1) . "/user/$folder/";
@@ -220,6 +248,7 @@ for my $user (keys %users) {
 
                     my $folder=$_;
                     $folder=~tr/./^/;
+                    # FIXME - At least #$%()' are all invalid to cyrus.
                     if (-f "$uwroot/$home/$_") {
                         debug("Found folder $uwroot/$home/$_");
                         # FIXME - For security, we probably should
@@ -252,6 +281,8 @@ for my $source (keys(%copy)) {
         }
     }
 
+    touch $cyruid, $cyrgid, 0600, "$copy{$source}/cyrus.header";
+
     # FIXME - Check to see if the folder exists.
     # If it does, figure out a message offset to start at.
     for (my $n=1;$n<=@messages;$n++) {
@@ -272,6 +303,20 @@ for my $source (keys(%copy)) {
         for my $line (@{$messages[$n-1]}) {
             $line=~s/(?<!\r)\n/\r\n/g;
             print $dest $line;
+        }
+    }
+}
+
+if (defined($cyrreconstruct)) {
+    $( = $) = $cyrgid;
+    $< = $> = $cyruid;
+    # FIXME - Error checking.
+
+    # FIXME - Need to add options for path separator and partition.
+    my @options=qw/-p default -f -x -r/;
+    for my $user (@rebuild) {
+        if (system($cyrreconstruct, @options, "user/$user") != 0) {
+            die "reconstruct failed (exit value " . ($? >> 8) . ")\n";
         }
     }
 }

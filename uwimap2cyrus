@@ -22,7 +22,7 @@
 #     Boston, MA  02110-1301
 #     USA
 #
-# $Id: uwimap2cyrus,v 1.3 2006/08/04 17:54:38 steve Exp $
+# $Id: uwimap2cyrus,v 1.4 2006/08/04 18:37:08 steve Exp $
 
 =head1 NAME
 
@@ -250,7 +250,7 @@ for my $user (keys %users) {
                     $folder=~tr/./^/;
                     # FIXME - At least #$%()' are all invalid to cyrus.
                     # We need to get a complete list.  (Would tr be better?)
-                    $folder=~s/[\#\$\%\(\)]//g;
+                    $folder=~s/[\#\$\%\(\)']//g;
                     if (-f "$uwroot/$home/$_") {
                         debug("Found folder $uwroot/$home/$_");
                         # FIXME - For security, we probably should

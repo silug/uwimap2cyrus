@@ -22,7 +22,7 @@
 #     Boston, MA  02110-1301
 #     USA
 #
-# $Id: uwimap2cyrus,v 1.4 2006/08/04 18:37:08 steve Exp $
+# $Id: uwimap2cyrus,v 1.5 2006/12/14 01:07:04 steve Exp $
 
 =head1 NAME
 
@@ -256,6 +256,14 @@ for my $user (keys %users) {
                         # FIXME - For security, we probably should
                         # make sure the user owns this file.
                         $copy{"$uwroot/$home/$_"}=$cyrfolder . $folder;
+                    } elsif (-f "$uwroot/$home/mail/$_") {
+                        debug("Found folder $uwroot/$home/mail/$_");
+                        # FIXME - For security, we probably should
+                        # make sure the user owns this file.
+                        $copy{"$uwroot/$home/mail/$_"}=$cyrfolder . $folder;
+                    } else {
+                        warn "Couldn't find folder '$_' in '$home'!\n"
+                            unless $_ eq "INBOX";
                     }
                 }
             }

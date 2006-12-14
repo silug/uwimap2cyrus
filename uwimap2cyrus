@@ -22,7 +22,7 @@
 #     Boston, MA  02110-1301
 #     USA
 #
-# $Id: uwimap2cyrus,v 1.5 2006/12/14 01:07:04 steve Exp $
+# $Id: uwimap2cyrus,v 1.6 2006/12/14 01:10:24 steve Exp $
 
 =head1 NAME
 
@@ -62,7 +62,7 @@ sub subject($) {
     my $message=$_[0];
 
     for my $line (@{$message}) {
-        return undef if ($line=~/^\s*$/);
+        return "" if ($line=~/^\s*$/);
 
         if ($line=~/^Subject:\s*(.*)$/i) {
             return $1;
